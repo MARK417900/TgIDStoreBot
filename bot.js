@@ -15,9 +15,8 @@ app.listen(PORT, () => {
 const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 8641315326;
-const GROUP_ID = -1003907305365;
+const GROUP_ID = -1003345786666;
 const GROUP_INVITE_LINK = "https://t.me/+pNRg_oJqSaFlZWE1";
-const PLATFORM_CUT_PERCENT = 2.5;
 const REFER_REWARD = 20;
 
 // ─── FIX 3: Escape special Markdown characters in user-supplied text ──────────
@@ -28,32 +27,11 @@ function escMD(text) {
 
 // ─── IN-MEMORY STORE ──────────────────────────────────────────────────────────
 let users = {};
-let tables = {};
 let pendingDeposits = {};
-let pendingWithdrawals = {};
-let pendingWinClaims = {};
 let botOnline = true;
 let adminState = {};
 let userState = {};
-let tableCounter = 1;
-let txnCounter = 1;
-let claimCounter = 1;
 
-// ─── GLOBAL STATS TRACKER ─────────────────────────────────────────────────────
-let stats = {
-  totalMatches: 0,
-  totalPot: 0,
-  totalCommission: 0,
-  completedMatches: [],
-  activeUsers24h: {},
-};
-
-function recordMatchCompletion(pot, commission) {
-  stats.totalMatches++;
-  stats.totalPot += pot;
-  stats.totalCommission += commission;
-  stats.completedMatches.push({ completedAt: Date.now(), pot, commission });
-}
 
 function markUserActive(userId) {
   stats.activeUsers24h[userId] = Date.now();
@@ -78,11 +56,7 @@ function registerUser(msg, referredBy = null) {
     users[id] = {
       name: `${msg.from.first_name} ${msg.from.last_name || ""}`.trim(),
       username: msg.from.username || "N/A",
-      balance: 0,
-      gamesPlayed: 0,
-      gamesWon: 0,
       status: "idle",
-      tableId: null,
       hasDeposited: false,
       referredBy: referredBy,
       referRewardPaid: false,
@@ -96,9 +70,6 @@ function ensureUser(from) {
     users[from.id] = {
       name: `${from.first_name} ${from.last_name || ""}`.trim(),
       username: from.username || "N/A",
-      balance: 1000,
-      gamesPlayed: 0,
-      gamesWon: 0,
       status: "idle",
       tableId: null,
       hasDeposited: false,
@@ -110,22 +81,6 @@ function ensureUser(from) {
   return users[from.id];
 }
 
-const genTableId = () => `T-${String(tableCounter++).padStart(4, "0")}`;
-const genTxnId = () => `TXN-${String(txnCounter++).padStart(5, "0")}`;
-const genClaimId = () => `CLM-${String(claimCounter++).padStart(4, "0")}`;
-
-function gameLabel(t) {
-  const map = {
-    quick: "Quick Ludo",
-    classic: "Classic Ludo",
-    snake: "Snake & Ladder",
-    classic_1goti: "Classic Ludo — 1 Goti Mode",
-    classic_2goti: "Classic Ludo — 2 Goti Mode",
-    classic_3goti: "Classic Ludo — 3 Goti Mode",
-    classic_4goti: "Classic Ludo — 4 Goti Mode",
-  };
-  return map[t] || t;
-}
 
 function dname(chatId) {
   const u = users[chatId];
@@ -142,9 +97,8 @@ function mainMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: "👤 Profile" }, { text: "💰 Deposit" }],
-        [{ text: "⚡ Quick Ludo" }, { text: "🎲 Classic Ludo" }, { text: "Snake Ladder" }],
-        [{ text: "🤝 Refer & Earn" }, { text: "💸 Withdraw" }],
+        [{ text: "👤 Profile" }, { text: "Stock" }],
+        [{ text: "🤝 Refer & Earn" },{ text: "Get Telegram" }],
         [{ text: "🆘 Support" }],
       ],
       resize_keyboard: true,
@@ -159,7 +113,6 @@ function adminMenu() {
       keyboard: [
         [{ text: "📢 Broadcast" }, { text: "👥 All Users" }, { text: "📊 Bot Status" }],
         [{ text: "👤 MSG User" }, { text: botOnline ? "🔴 Turn Bot OFF" : "🟢 Turn Bot ON" }, { text: "👤 User Info" }],
-        [{ text: "📋 Open Tables" }, { text: "💰 Balance Update" }],
         [{ text: "🔙 User Menu" }],
       ],
       resize_keyboard: true,
@@ -174,17 +127,6 @@ const cancelKb = (label = "❌ Cancel") => ({
     one_time_keyboard: true,
   },
 });
-
-function withdrawMethodMenu() {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "📱 UPI ID", callback_data: "wdl_method_upi" }, { text: "📷 QR Code", callback_data: "wdl_method_qr" }],
-        [{ text: "❌ Cancel", callback_data: "back_menu" }],
-      ]
-    },
-  };
-}
 
 function send(chatId, text, extra = {}) {
   return bot.sendMessage(chatId, text, extra).catch(err =>
@@ -891,94 +833,6 @@ bot.on("callback_query", query => {
     return;
   }
 
-  if (data.startsWith("classic_") && data.endsWith("goti")) {
-    if (!isGroupCallback) bot.deleteMessage(chatId, msgId).catch(() => { });
-    const gotiKey = data;
-    const gotiLabel = data.replace("classic_", "").replace("goti", "") + " Goti";
-    send(chatId,
-      `🎲 Classic Ludo — ${gotiLabel} Mode\nChoose entry fee 👇`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "₹50", callback_data: `join_${gotiKey}_50` },
-              { text: "₹100", callback_data: `join_${gotiKey}_100` },
-              { text: "₹200", callback_data: `join_${gotiKey}_200` },
-              { text: "₹300", callback_data: `join_${gotiKey}_300` },
-            ],
-            [
-              { text: "₹500", callback_data: `join_${gotiKey}_500` },
-              { text: "₹1000", callback_data: `join_${gotiKey}_1000` },
-            ],
-            [{ text: "✏️ Custom Amount", callback_data: `table_custom_${gotiKey}` }],
-          ]
-        },
-      });
-    return;
-  }
-
-  if (data.startsWith("group_join_")) {
-    const tableId = data.replace("group_join_", "");
-    const t = tables[tableId];
-
-    if (!t || t.status !== "open") {
-      bot.answerCallbackQuery(query.id, { text: "This table is no longer available.", show_alert: true }).catch(() => { });
-      return;
-    }
-
-    ensureUser(query.from);
-    const user = users[chatId];
-
-    if (chatId === t.creatorId) {
-      bot.answerCallbackQuery(query.id, { text: "You can't join your own table!", show_alert: true }).catch(() => { });
-      return;
-    }
-    if (user.status !== "idle") {
-      bot.answerCallbackQuery(query.id, { text: `You are already in a session (${user.status}). Finish it first.`, show_alert: true }).catch(() => { });
-      return;
-    }
-    if (user.balance < t.entryFee) {
-      bot.answerCallbackQuery(query.id, { text: `Insufficient balance! You need ₹${t.entryFee}. Please deposit first.`, show_alert: true }).catch(() => { });
-      return;
-    }
-
-    user.balance -= t.entryFee;
-    user.status = "waiting";
-    user.tableId = tableId;
-    t.opponentId = chatId;
-    t.status = "pending_accept";
-
-    clearTimeout(t.expireTimer);
-
-    if (t.groupMsgId) {
-      bot.editMessageText(
-        `Match Found!\n\n${dname(t.creatorId)} vs ${dname(chatId)}\n${gameLabel(t.gameType)} `,
-        { chat_id: groupChatId, message_id: t.groupMsgId }
-      ).catch(() => { });
-      bot.editMessageReplyMarkup({ inline_keyboard: [] },
-        { chat_id: groupChatId, message_id: t.groupMsgId }
-      ).catch(() => { });
-    }
-
-    send(t.creatorId,
-      `🎯 Opponent found via group!\n\n` +
-      `Opponent: ${dname(chatId)}\n` +
-      `Table: ${tableId}\n\n` +
-      `Waiting for opponent to accept...`);
-
-    send(chatId,
-      `🎯 Match Request!\n\n` +
-      `Game: ${gameLabel(t.gameType)}\n` +
-      `Table Creator: ${dname(t.creatorId)}\n` +
-      `Entry: ₹${t.entryFee} (deducted)` +
-      `Winner Gets: ₹${t.winnerGets}\n\n` +
-      `Accept or Decline within 5 minutes!`,
-      acceptDeclineMenu(tableId));
-
-    t.acceptTimer = setTimeout(() => timeoutPendingAccept(tableId), 300_000);
-    return;
-  }
-
   if (data.startsWith("dep_approve_")) {
     const txnId = data.replace("dep_approve_", "");
     const dep = pendingDeposits[txnId];
@@ -1121,88 +975,6 @@ bot.on("callback_query", query => {
     return;
   }
 
-  if (data.startsWith("withdraw_") && !data.startsWith("withdraw_method_")) {
-    const amount = parseInt(data.split("_")[1]);
-    bot.deleteMessage(chatId, msgId).catch(() => { });
-    const u = users[chatId];
-    const gamesPlayed = u?.gamesPlayed || 0;
-    const hasDeposited = u?.hasDeposited || false;
-    if (gamesPlayed < 2 && !hasDeposited) {
-      send(chatId,
-        `🔒 Withdrawal Locked\n\n` +
-        `Complete any ONE of the following:\n` +
-        `• Play any 2 matches\n` +
-        `• Make any single deposit\n\n` +
-        `Your Status:\n` +
-        `Matches Played: ${gamesPlayed}/2\n\n` +
-        `Deposits Made: ${hasDeposited ? "Yes ✅" : "No ❌"}\n` +
-        `Once completed any one of the above, withdrawals will be enabled automatically.`);
-      return;
-    }
-    if (!amount) return;
-    if ((users[chatId]?.balance || 0) < amount) {
-      send(chatId, `😥 Insufficient balance! You have ₹${users[chatId]?.balance || 0}`);
-      return;
-    }
-    userState[chatId] = { action: "withdraw_method", amount };
-    send(chatId,
-      `💸 Choose Withdraw method:`,
-      withdrawMethodMenu());
-    return;
-  }
-
-  if (data === "wdl_method_upi") {
-    const st = userState[chatId];
-    if (!st || st.action !== "withdraw_method") return;
-    userState[chatId] = { action: "withdraw_upi", amount: st.amount };
-    bot.deleteMessage(chatId, msgId).catch(() => { });
-    send(chatId, `📱 Enter your UPI ID:`, cancelKb());
-    return;
-  }
-
-  if (data === "wdl_method_qr") {
-    const st = userState[chatId];
-    if (!st || st.action !== "withdraw_method") return;
-    userState[chatId] = { action: "withdraw_qr", amount: st.amount };
-    bot.deleteMessage(chatId, msgId).catch(() => { });
-    send(chatId,
-      `📷 Send your QR Code screenshot we can send withdraw payment.`,
-      cancelKb());
-    return;
-  }
-
-  if (data === "wdl_confirm_upi") {
-    const st = userState[chatId];
-    if (!st || st.action !== "withdraw_upi_confirm") return;
-    const { amount, upiId } = st;
-    if ((users[chatId]?.balance || 0) < amount) {
-      send(chatId, `❌ Insufficient balance!`, mainMenu());
-      delete userState[chatId];
-      return;
-    }
-    const txnId = genTxnId();
-    users[chatId].balance -= amount;
-    pendingWithdrawals[txnId] = { txnId, chatId, amount, upiId, method: "upi", status: "pending", timestamp: new Date() };
-    delete userState[chatId];
-
-    sendMD(chatId,
-      `✅ Withdrawal request Submitted!\n\nTXN: ${tapCopy(txnId)}\nAmount: ₹${amount}\nUPI: ${tapCopy(upiId)}\nRemaining Balance: ₹${users[chatId].balance}\n\nAdmin will process within few hours.`,
-      mainMenu());
-
-    bot.sendMessage(ADMIN_ID,
-      `💸 Withdrawal Request!\n\nTXN: ${txnId}\nMethod: UPI\nUPI: ${upiId}\nAmount: ₹${amount}\nUser: ${users[chatId]?.name} (${chatId})\nUsername: @${users[chatId]?.username}`,
-      { reply_markup: { inline_keyboard: [[{ text: "✅ Mark Paid", callback_data: `wdl_done_${txnId}` }, { text: "❌ Reject", callback_data: `wdl_rej_${txnId}` }]] } }
-    ).catch(() => { });
-    return;
-  }
-
-  if (data === "wdl_edit_upi") {
-    const st = userState[chatId];
-    if (!st) return;
-    userState[chatId] = { action: "withdraw_upi", amount: st.amount };
-    send(chatId, `✏️ Enter your UPI ID again:`, cancelKb());
-    return;
-  }
 
   if (data === "back_menu") {
     bot.deleteMessage(chatId, msgId).catch(() => { });
@@ -1272,93 +1044,6 @@ bot.on("photo", msg => {
     return;
   }
 
-  if (st.action === "win_proof_screenshot") {
-    const { tableId } = st;
-    const t = tables[tableId];
-    if (!t || t.status !== "active") {
-      send(chatId, "Table is no longer active.", mainMenu());
-      delete userState[chatId];
-      return;
-    }
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
-    const claimId = genClaimId();
-    pendingWinClaims[claimId] = {
-      claimId, tableId, claimerId: chatId, screenshotFileId: fileId, status: "pending", timestamp: new Date(),
-    };
-    delete userState[chatId];
-
-    send(chatId,
-      `✅ Win Claim Submitted!\n\nClaim ID: ${claimId}\nTable: ${tableId}\n\nAdmin will verify your screenshot. You will be notified.`,
-      mainMenu());
-
-    const opp = [t.creatorId, t.opponentId]
-      .filter(p => p && p !== chatId)
-      .map(p => users[p]?.name || p)
-      .join(", ");
-
-    bot.sendPhoto(ADMIN_ID, fileId, {
-      caption:
-        `New Win Claim!\n\n` +
-        `Claim: ${claimId}\n` +
-        `Table: ${tableId}\n` +
-        `Claimer: ${users[chatId]?.name || "Unknown"} (${chatId})\n` +
-        `vs: ${opp}\n` +
-        `Prize: ₹${t.winnerGets}\n` +
-        `Time: ${new Date().toLocaleString("en-IN")}`,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "✅ Approve Win", callback_data: `win_approve_${claimId}` },
-          { text: "❌ Reject", callback_data: `win_reject_${claimId}` },
-        ]]
-      },
-    }).catch(() => {
-      bot.sendMessage(ADMIN_ID,
-        `New Win Claim!\nClaim: ${claimId}\nTable: ${tableId}\nClaimer: ${users[chatId]?.name} (${chatId})\nPrize: ₹${t.winnerGets}\nScreenshot forward failed.`,
-        { reply_markup: { inline_keyboard: [[{ text: "✅ Approve Win", callback_data: `win_approve_${claimId}` }, { text: "❌ Reject", callback_data: `win_reject_${claimId}` }]] } }
-      ).catch(() => { });
-    });
-    return;
-  }
-
-  if (st.action === "withdraw_qr") {
-    const { amount } = st;
-    if ((users[chatId]?.balance || 0) < amount) {
-      send(chatId, `❌ Insufficient balance!`, mainMenu());
-      delete userState[chatId];
-      return;
-    }
-    const fileId = msg.photo[msg.photo.length - 1].file_id;
-    const txnId = genTxnId();
-    users[chatId].balance -= amount;
-    pendingWithdrawals[txnId] = { txnId, chatId, amount, upiId: "QR Code", method: "qr", qrFileId: fileId, status: "pending", timestamp: new Date() };
-    delete userState[chatId];
-
-    sendMD(chatId,
-      `✅ Withdrawal Request Submitted!\n\nTXN: ${tapCopy(txnId)}\nAmount: ₹${amount}\nMethod: QR Code\n\nBalance: ₹${users[chatId].balance}\n\nAdmin will process within few hours.`,
-      mainMenu());
-
-    bot.sendPhoto(ADMIN_ID, fileId, {
-      caption:
-        `💸 Withdrawal Request!\n\n` +
-        `TXN: ${txnId}\n` +
-        `Method: QR Code 📷\n` +
-        `Amount: ₹${amount}\n` +
-        `User: ${users[chatId]?.name} (${chatId})\n` +
-        `Username: @${users[chatId]?.username}`,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "✅ Mark Paid", callback_data: `wdl_done_${txnId}` },
-          { text: "❌ Reject", callback_data: `wdl_rej_${txnId}` },
-        ]]
-      },
-    }).catch(() => {
-      bot.sendMessage(ADMIN_ID,
-        `New Withdrawal!\nTXN: ${txnId}\nMethod: QR\nAmount: ₹${amount}\nUser: ${users[chatId]?.name} (${chatId})\nQR forward failed.`,
-        { reply_markup: { inline_keyboard: [[{ text: "✅ Mark Paid", callback_data: `wdl_done_${txnId}` }, { text: "❌ Reject", callback_data: `wdl_rej_${txnId}` }]] } }
-      ).catch(() => { });
-    });
-    return;
-  }
 });
 
 // ─── ERROR HANDLING ───────────────────────────────────────────────────────────
