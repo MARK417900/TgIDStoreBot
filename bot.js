@@ -98,7 +98,7 @@ function mainMenu() {
     reply_markup: {
       keyboard: [
         [{ text: "👤 Profile" }, { text: "Stock" }],
-        [{ text: "🤝 Refer & Earn" },{ text: "Get Telegram" }],
+        [{ text: "🤝 Refer & Earn" },{ text: "Get Telegram ID" }],
         [{ text: "🆘 Support" }],
       ],
       resize_keyboard: true,
@@ -574,8 +574,6 @@ bot.on("message", msg => {
       `Name: ${u.name || "N/A"}\n` +
       `Balance: ₹${u.balance || 0}\n` +
       `Refer Count: ${u.referCount || 0}\n` +
-      `Games Played: ${u.gamesPlayed || 0}\n` +
-      `Games Won: ${u.gamesWon || 0}\n` +
       `Status: ${em} ${u.status || "idle"}` +
       (pd ? `\n\nPending Deposit: ₹${pd.amount} (TXN: ${tapCopy(pd.txnId)})` : ""),
       mainMenu());
