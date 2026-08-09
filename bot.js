@@ -16,7 +16,7 @@ const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 8641315326;
 const GROUP_ID = -1003907305365;
-const GROUP_INVITE_LINK = "https://t.me/+pNRg_ojqSaFlZWE1";
+const GROUP_INVITE_LINK = "https://t.me/+pNRg_oJqSaFIZWE1";
 const PLATFORM_CUT_PERCENT = 2.5;
 const REFER_REWARD = 20;
 
