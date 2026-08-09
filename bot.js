@@ -16,7 +16,7 @@ const token = process.env.BOT_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 8641315326;
 const GROUP_ID = -1003907305365;
-const GROUP_INVITE_LINK = "https://t.me/+pNRg_oJqSaFIZWE1";
+const GROUP_INVITE_LINK = "https://t.me/+pNRg_oJqSaFlZWE1";
 const PLATFORM_CUT_PERCENT = 2.5;
 const REFER_REWARD = 20;
 
@@ -276,351 +276,6 @@ async function requireGroupMembership(chatId, onSuccess) {
     });
 }
 
-//  MATCHMAKING
-function handleJoin(chatId, gameType, entryFee) {
-  const user = users[chatId];
-  if (!user) return;
-
-  if (user.status !== "idle") {
-    send(chatId, `⚠️ You already have an active session (${user.status}).\n\nFinish or cancel it first.`);
-    return;
-  }
-  if (user.balance < entryFee) {
-    send(chatId,
-      `❌ Insufficient Balance!\nPlease deposit first.`,
-      mainMenu());
-    return;
-  }
-
-  const pot = entryFee * 2;
-  const platformCut = Math.floor(pot * PLATFORM_CUT_PERCENT / 100);
-  const winnerGets = pot - platformCut;
-
-  const match = Object.values(tables).find(
-    t => t.gameType === gameType &&
-      t.entryFee === entryFee &&
-      t.status === "open" &&
-      t.creatorId !== chatId
-  );
-
-  if (match) {
-    user.balance -= entryFee;
-    user.status = "waiting";
-    user.tableId = match.tableId;
-
-    markUserActive(chatId);
-    markUserActive(match.creatorId);
-
-    if (match.expireTimer) { clearTimeout(match.expireTimer); match.expireTimer = null; }
-
-    match.opponentId = chatId;
-    match.status = "pending_accept";
-
-    if (match.groupMsgId) {
-      bot.editMessageText(
-        `Match Found!\n\n${dname(match.creatorId)} vs ${dname(chatId)}\n${gameLabel(gameType)} | Entry ₹${entryFee}`,
-        { chat_id: GROUP_ID, message_id: match.groupMsgId }
-      ).catch(() => { });
-      bot.editMessageReplyMarkup({ inline_keyboard: [] },
-        { chat_id: GROUP_ID, message_id: match.groupMsgId }
-      ).catch(() => { });
-    }
-
-    send(match.creatorId,
-      `🎯 Opponent Found!\n\n` +
-      `Game: ${gameLabel(gameType)}\n` +
-      `Opponent: ${dname(chatId)}\n` +
-      `Entry: ₹${entryFee} | Winner Gets: ₹${winnerGets}\n\n` +
-      `Waiting for opponent to accept...`);
-
-    send(chatId,
-      `🎯 Match Found!\n\n` +
-      `Game: ${gameLabel(gameType)}\n` +
-      `Table Creator: ${dname(match.creatorId)}\n` +
-      `Entry: ₹${entryFee} | Winner Gets: ₹${winnerGets}\n\n` +
-      `Accept or Decline within 5 minutes!`,
-      acceptDeclineMenu(match.tableId));
-
-    match.acceptTimer = setTimeout(() => timeoutPendingAccept(match.tableId), 300_000);
-
-  } else {
-    const tableId = genTableId();
-
-    user.balance -= entryFee;
-    user.status = "waiting";
-    user.tableId = tableId;
-
-    markUserActive(chatId);
-
-    tables[tableId] = {
-      tableId, gameType, entryFee, pot, platformCut, winnerGets,
-      creatorId: chatId,
-      opponentId: null,
-      status: "open",
-      roomCode: null,
-      groupMsgId: null,
-      expireTimer: null,
-      acceptTimer: null,
-      lossReports: [],
-      createdAt: new Date(),
-    };
-
-    sendMD(chatId,
-      `✅ Table ${tapCopy(tableId)} Created!\n\n` +
-      `Game: ${gameLabel(gameType)}\n` +
-      `Entry Fee: ₹${entryFee} (deducted)\n` +
-      `Winner Gets: ₹${winnerGets}\n\n` +
-      `Searching for opponent in group...`,
-      waitingMenu(tableId));
-
-    bot.sendMessage(GROUP_ID,
-      `🎮 New Table Created!\n\n` +
-      `Game: ${gameLabel(gameType)}\n` +
-      `Creator: ${dname(chatId)}\n` +
-      `Entry: ₹${entryFee} | Win: ₹${winnerGets}`,
-      {
-        reply_markup: {
-          inline_keyboard: [[
-            { text: `✅ Join Table (₹${entryFee})`, callback_data: `group_join_${tableId}` },
-          ]]
-        },
-      }
-    ).then(sent => {
-      const t = tables[tableId];
-      if (!t) return;
-      t.groupMsgId = sent.message_id;
-      t.expireTimer = setTimeout(() => expireOpenTable(tableId), 600_000);
-    }).catch(() => { });
-  }
-}
-
-function expireOpenTable(tableId) {
-  const t = tables[tableId];
-  if (!t || t.status !== "open") return;
-  t.status = "cancelled";
-  const u = users[t.creatorId];
-  if (u) { u.balance += t.entryFee; u.status = "idle"; u.tableId = null; }
-
-  send(t.creatorId,
-    `⏰Timeout! Table Expired!\n\nNo one joined ${tableId}\nAmount Refunded: ₹${t.entryFee} | Balance: ₹${users[t.creatorId]?.balance}`,
-    mainMenu());
-
-  if (t.groupMsgId) {
-    bot.editMessageText(`❌ Table ${tableId} expired — no opponent found.`,
-      { chat_id: GROUP_ID, message_id: t.groupMsgId }).catch(() => { });
-    bot.editMessageReplyMarkup({ inline_keyboard: [] },
-      { chat_id: GROUP_ID, message_id: t.groupMsgId }).catch(() => { });
-  }
-}
-
-function timeoutPendingAccept(tableId) {
-  const t = tables[tableId];
-  if (!t || t.status !== "pending_accept") return;
-  t.status = "cancelled";
-  [t.creatorId, t.opponentId].forEach(pid => {
-    if (!pid || !users[pid]) return;
-    users[pid].balance += t.entryFee;
-    users[pid].status = "idle";
-    users[pid].tableId = null;
-    send(pid,
-      `⏰ Match timed out!\n\nOpponent did not respond in time.\nRefund: ₹${t.entryFee} | Balance: ₹${users[pid].balance}`,
-      mainMenu());
-  });
-}
-
-function askCreatorForRoomCode(tableId) {
-  const t = tables[tableId];
-  if (!t) return;
-  t.status = "room_pending";
-  userState[t.creatorId] = { action: "send_room_code", tableId };
-  send(t.creatorId,
-    `✅ Opponent Accepted!\n\n` +
-    `Please type and send your Room Code from the Ludo app.`,
-    cancelKb("❌ Cancel Game"));
-}
-
-function sendRoomCodeToOpponent(tableId, code) {
-  const t = tables[tableId];
-  if (!t) return;
-  t.status = "room_shared";
-  t.roomCode = String(code).replace(/`/g, "'");
-
-  sendMD(t.creatorId,
-    `📤 Room code sent to opponent!\n\n` +
-    `Room Code: ${tapCopy(t.roomCode)}\n\n` +
-    `Waiting for opponent to Start Game...`);
-
-  sendMD(t.opponentId,
-    `Table: ${tableId}\n\n` +
-    `🔑Room Code: ${tapCopy(t.roomCode)}\n\n` +
-    `Tap to copy code and and Start Game!`,
-    startGameMenu(tableId));
-}
-
-function activateGame(tableId) {
-  const t = tables[tableId];
-  if (!t) return;
-  t.status = "active";
-  [t.creatorId, t.opponentId].forEach(pid => {
-    if (!users[pid]) return;
-    users[pid].status = "in-game";
-    users[pid].tableId = tableId;
-    markUserActive(pid);
-  });
-
-  const names = `${dname(t.creatorId)} vs ${dname(t.opponentId)}`;
-
-  sendMD(t.creatorId,
-    `🎮 Table ${tableId} Match Started!\n\n` +
-    `\n` +
-    `${names}\n` +
-    `Prize: ₹${t.winnerGets}\n` +
-    `Room Code: ${tapCopy(t.roomCode)}\n\n` +
-    `Good luck!\n Tap your result after the game:`,
-    gameResultMenu(tableId));
-
-  send(t.opponentId,
-    `🎮 Game is ON!\n\n` +
-    `${names}\n` +
-    `Prize: ₹${t.winnerGets}\n\n` +
-    `Good luck!\n Tap your result after the game:`,
-    gameResultMenu(tableId));
-
-  if (GROUP_ID) {
-    bot.sendMessage(GROUP_ID,
-      `🎮 Game Started!\n\n ${names}\n${gameLabel(t.gameType)} | Prize: ₹${t.winnerGets}`
-    ).catch(() => { });
-  }
-
-  bot.sendMessage(ADMIN_ID,
-    `New Active Table: ${tableId}\nPlayers: ${names}\nPot: ₹${t.pot}\nRoom Code: ${t.roomCode}`,
-    {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "🏆 Declare Winner", callback_data: `declare_winner_${tableId}` },
-          { text: "🚫 Cancel Table", callback_data: `cancel_table_${tableId}` },
-        ]]
-      },
-    }
-  ).catch(() => { });
-}
-
-function declareWinner(tableId, winnerId) {
-  const t = tables[tableId];
-  if (!t) return;
-  clearTimeout(t.acceptTimer);
-  t.status = "completed";
-  t.winner = winnerId;
-
-  users[winnerId].balance += t.winnerGets;
-  users[winnerId].gamesWon += 1;
-
-  [t.creatorId, t.opponentId].forEach(pid => {
-    if (!pid || !users[pid]) return;
-    users[pid].gamesPlayed += 1;
-    users[pid].status = "idle";
-    users[pid].tableId = null;
-  });
-
-  recordMatchCompletion(t.pot, t.platformCut);
-
-  [t.creatorId, t.opponentId].forEach(pid => {
-    if (!pid || !users[pid]) return;
-    const u = users[pid];
-    if (u.gamesPlayed === 1 && u.referredBy && !u.referRewardPaid) {
-      const referrer = users[u.referredBy];
-      if (referrer) {
-        referrer.balance += REFER_REWARD;
-        referrer.referCount += 1;
-        u.referRewardPaid = true;
-        send(u.referredBy,
-          `Your referred user ${u.name} just completed their first match!\n\n` +
-          `🎉 Refer Reward ₹${REFER_REWARD} added to your wallet!\n` +
-          `New Balance: ₹${referrer.balance}`);
-      }
-    }
-  });
-
-  const winnerName = users[winnerId]?.name || "Unknown";
-  const names = `${users[t.creatorId]?.name || t.creatorId} vs ${users[t.opponentId]?.name || t.opponentId}`;
-
-  [t.creatorId, t.opponentId].forEach(pid => {
-    if (!pid) return;
-    send(pid,
-      pid === winnerId
-        ? `🏆 You Won!\n\nTable: ${tableId}\nPrize: ₹${t.winnerGets}(added)\nNew Balance: ₹${users[pid].balance}`
-        : `😔 You Lost! Table ${tableId}\n\nBetter luck next time!`,
-      mainMenu());
-  });
-
-  if (GROUP_ID) {
-    bot.sendMessage(GROUP_ID,
-      `🏆 Table ${tableId} Game Result! \n\n ${names} \nWinner: ${winnerName} | Prize: ₹${t.winnerGets}`
-    ).catch(() => { });
-  }
-
-  bot.sendMessage(ADMIN_ID,
-    `Table ${tableId} completed.\nWinner: ${winnerName} | ₹${t.winnerGets} paid.`
-  ).catch(() => { });
-}
-
-function cancelTable(tableId, reason) {
-  const t = tables[tableId];
-  if (!t || ["completed", "cancelled"].includes(t.status)) return;
-  clearTimeout(t.acceptTimer);
-  clearTimeout(t.expireTimer);
-  t.status = "cancelled";
-
-  [t.creatorId, t.opponentId].forEach(pid => {
-    if (!pid || !users[pid]) return;
-    users[pid].balance += t.entryFee;
-    users[pid].status = "idle";
-    users[pid].tableId = null;
-    send(pid,
-      `Table ${tableId} was ${reason}.\nRefund: ₹${t.entryFee} | Balance: ₹${users[pid].balance}`,
-      mainMenu());
-  });
-}
-
-function sendUserInfoPanel(adminChatId, targetId) {
-  const u = users[targetId];
-  if (!u) { send(adminChatId, `❌ User ${targetId} not found.`); return; }
-  const pendingDep = Object.values(pendingDeposits).find(d => d.chatId === targetId && d.status === "pending");
-  const pendingWdl = Object.values(pendingWithdrawals).find(w => w.chatId === targetId && w.status === "pending");
-
-  const text =
-    `👤 User Info\n\n` +
-    `ID: \`${targetId}\`\n` +
-    `Name: ${u.name}\n` +
-    `Username: @${u.username}\n\n` +
-    `Balance: ₹${u.balance}\n` +
-    `Games Played: ${u.gamesPlayed}\n` +
-    `Games Won: ${u.gamesWon}\n` +
-    `Status: ${u.status}\n` +
-    `Table: ${u.tableId || "None"}\n\n` +
-    `Deposited: ${u.hasDeposited ? "Yes ✅" : "No ❌"}\n` +
-    `Referred By: ${u.referredBy ? `\`${u.referredBy}\`` : "None"}\n` +
-    `Refer Count: ${u.referCount || 0}\n` +
-    (pendingDep ? `\nPending Deposit: ₹${pendingDep.amount} (${pendingDep.txnId})\n` : "") +
-    (pendingWdl ? `\nPending Withdrawal: ₹${pendingWdl.amount} (${pendingWdl.txnId})\n` : "");
-
-  bot.sendMessage(adminChatId, text, {
-    parse_mode: "Markdown",
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "🔄 Reset User State", callback_data: `reset_state_${targetId}` }],
-      ]
-    },
-  }).catch(() => {
-    send(adminChatId, text.replace(/[`*_\[\]]/g, ""), {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "🔄 Reset User State", callback_data: `reset_state_${targetId}` }],
-        ]
-      },
-    });
-  });
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  /start
@@ -870,368 +525,142 @@ bot.on("message", msg => {
   // ══════════════════════ USER ═══════════════════════════════════════════════
   if (!botOnline) { send(chatId, "🔴 Bot is offline for maintenance."); return; }
 
-  // ── GAME FLOW KEYBOARD HANDLERS ────────────────────────────────────────────
 
-  if (text && text.startsWith("❌ Cancel Table ")) {
-    const tableId = text.replace("❌ Cancel Table ", "").trim();
-    const t = tables[tableId];
-    if (!t) { send(chatId, "Table not found.", mainMenu()); return; }
-    if (chatId !== t.creatorId) { send(chatId, "Only the creator can cancel."); return; }
-    if (t.status !== "open") { send(chatId, "Table is no longer open.", mainMenu()); return; }
-    clearTimeout(t.expireTimer);
-    cancelTable(tableId, "cancelled by creator");
-    if (t.groupMsgId) {
-      bot.editMessageText(`Table ${tableId} was cancelled by creator.`,
-        { chat_id: GROUP_ID, message_id: t.groupMsgId }).catch(() => { });
-      bot.editMessageReplyMarkup({ inline_keyboard: [] },
-        { chat_id: GROUP_ID, message_id: t.groupMsgId }).catch(() => { });
-    }
-    return;
-  }
+  // ── CUSTOM AMOUNT HANDLERS ──────────────────────────────────────────────
 
-  if (text && text.startsWith("✅ Accept ")) {
-    const tableId = text.replace("✅ Accept ", "").trim();
-    const t = tables[tableId];
-    if (!t || t.status !== "pending_accept") { send(chatId, "This match is no longer available.", mainMenu()); return; }
-    if (chatId !== t.opponentId) { send(chatId, "This request is not for you."); return; }
-    clearTimeout(t.acceptTimer);
-    send(chatId, `✅ Table ${tableId} Accepted !\n\nWaiting for the table creator to share the room code...`);
-    askCreatorForRoomCode(tableId);
-    return;
-  }
-
-  if (text && text.startsWith("❌ Decline ")) {
-    const tableId = text.replace("❌ Decline ", "").trim();
-    const t = tables[tableId];
-    if (!t) { send(chatId, "Table not found.", mainMenu()); return; }
-    clearTimeout(t.acceptTimer);
-    cancelTable(tableId, "declined by opponent");
-    return;
-  }
-
-  if (text && text.startsWith("▶️ Start Game ")) {
-    const tableId = text.replace("▶️ Start Game ", "").trim();
-    const t = tables[tableId];
-    if (!t || t.status !== "room_shared") { send(chatId, "Game session not found or already started.", mainMenu()); return; }
-    if (chatId !== t.opponentId) { send(chatId, "Only the opponent can press Start."); return; }
-    activateGame(tableId);
-    return;
-  }
-
-  if (text && text.startsWith("🏆 I Won ")) {
-    const tableId = text.replace("🏆 I Won ", "").trim();
-    const t = tables[tableId];
-    if (!t || t.status !== "active") { send(chatId, "Table is not active.", mainMenu()); return; }
-    if (chatId !== t.creatorId && chatId !== t.opponentId) { send(chatId, "You are not in this table."); return; }
-
-    const already = Object.values(pendingWinClaims).find(
-      c => c.tableId === tableId && c.claimerId === chatId && c.status === "pending"
-    );
-    if (already) { send(chatId, `Claim already submitted: ${already.claimId}\nWait for admin verification.`); return; }
-
-    userState[chatId] = { action: "win_proof_screenshot", tableId };
-    send(chatId,
-      `Win Claim — Table ${tableId}\n\nSend a screenshot of your winning game as proof.\n\nFalse claims = permanent ban.`,
-      cancelKb("❌ Cancel Claim"));
-    return;
-  }
-
-  if (text && text.startsWith("😔 I Lost ")) {
-    const tableId = text.replace("😔 I Lost ", "").trim();
-    const t = tables[tableId];
-    if (!t || t.status !== "active") { send(chatId, "Table is not active.", mainMenu()); return; }
-    if (chatId !== t.creatorId && chatId !== t.opponentId) { send(chatId, "You are not in this table."); return; }
-    if (t.lossReports.includes(chatId)) { send(chatId, "You already reported a loss for this table."); return; }
-
-    t.lossReports.push(chatId);
-    users[chatId].gamesPlayed += 1;
-    users[chatId].status = "idle";
-    users[chatId].tableId = null;
-
-    send(chatId, `😔 Loss recorded for table ${tableId}.\n\nBetter luck next time!`, mainMenu());
-    bot.sendMessage(ADMIN_ID,
-      `${users[chatId]?.name} (${chatId}) reported a loss on table ${tableId}.`
-    ).catch(() => { });
-    return;
-  }
-
-  if (text === "❌ Cancel Game") {
-    const st = userState[chatId];
-    if (st?.action === "send_room_code") {
-      const tableId = st.tableId;
-      delete userState[chatId];
-      cancelTable(tableId, "cancelled by creator");
+  if (st.action === "custom_deposit_amount") {
+    const amount = parseInt(text);
+    if (isNaN(amount) || amount < 50) {
+      send(chatId, `❌ Invalid amount!`);
       return;
     }
-    const activeTable = Object.values(tables).find(
-      t => (t.creatorId === chatId || t.opponentId === chatId) &&
-        t.status === "room_shared"
-    );
-    if (activeTable) {
-      cancelTable(activeTable.tableId, "cancelled by opponent before start");
-      return;
-    }
-    send(chatId, "No active game to cancel.", mainMenu());
-    return;
-  }
-
-  if (text === "❌ Cancel Claim") {
     delete userState[chatId];
-    send(chatId, "❌ Claim cancelled.", mainMenu());
-    return;
-  }
-
-  if (text === "❌ Cancel Deposit") {
-    if (userState[chatId]?.action === "deposit_screenshot") {
-      delete userState[chatId];
-      send(chatId, "💔 Deposit cancelled.", mainMenu());
-    }
-    return;
-  }
-
-  if (text === "❌ Cancel") {
-    delete userState[chatId];
-    send(chatId, "❌ Cancelled.", mainMenu());
-    return;
-  }
-
-  // ── User state machine ────────────────────────────────────────────────────
-  const st = userState[chatId];
-  if (st) {
-    if (st.action === "send_room_code") {
-      const t = tables[st.tableId];
-      if (!t || t.status !== "room_pending") {
-        delete userState[chatId];
-        send(chatId, "⚠️ Table no longer available.", mainMenu());
-        return;
-      }
-      delete userState[chatId];
-      sendRoomCodeToOpponent(st.tableId, text.trim());
+    const ep = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
+    if (ep) {
+      send(chatId, `Pending deposit exists!\n\nTXN: ${ep.txnId} | ₹${ep.amount}\n\nWait for admin to process it first.`, mainMenu());
       return;
     }
-    if (st.action === "win_proof_screenshot") {
-      send(chatId, "📸 Please send a screenshot image as proof, not text.");
-      return;
-    }
-
-    // ── CUSTOM AMOUNT HANDLERS ──────────────────────────────────────────────
-
-    if (st.action === "custom_deposit_amount") {
-      const amount = parseInt(text);
-      if (isNaN(amount) || amount < 50) {
-        send(chatId, `❌ Invalid amount!`);
-        return;
-      }
-      delete userState[chatId];
-      const ep = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
-      if (ep) {
-        send(chatId, `Pending deposit exists!\n\nTXN: ${ep.txnId} | ₹${ep.amount}\n\nWait for admin to process it first.`, mainMenu());
-        return;
-      }
-      userState[chatId] = { action: "deposit_screenshot", amount };
-      const QR = `https://raw.githubusercontent.com/MARK417900/telegram-invite-bot/main/PaymentQR.jpg`;
-      bot.sendPhoto(chatId, QR, {
-        caption:
-          `💰 Deposit Amount ₹${amount}\n\n` +
-          `UPI ID: ${tapCopy("7891624054@mbk")}\n\n` +
-          `📷 After Payment send the screenshot of your transaction here.\n` +
-          `⚠ Screenshot must contain the UTR number.`,
-        parse_mode: "Markdown",
-        reply_markup: {
-          keyboard: [[{ text: "❌ Cancel Deposit" }]],
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      }).catch(() => { });
-      return;
-    }
-
-    if (st.action === "custom_withdraw_amount") {
-      const amount = parseInt(text);
-      const userBal = users[chatId]?.balance || 0;
-      const u = users[chatId];
-      const gamesPlayed = u?.gamesPlayed || 0;
-      const hasDeposited = u?.hasDeposited || false;
-      if (gamesPlayed < 2 && !hasDeposited) {
-        send(chatId,
-          `🔒 Withdrawal Locked\n\n` +
-          `Complete any ONE of the following:\n` +
-          `• Play any 2 matches\n` +
-          `• Make any single deposit\n\n` +
-          `Your Status:\n` +
-          `Matches Played: ${gamesPlayed}/2\n\n` +
-          `Deposits Made: ${hasDeposited ? "Yes ✅" : "No ❌"}\n` +
-          `Once completed any one of the above, withdrawals will be enabled automatically.`);
-        return;
-      }
-      if (isNaN(amount) || amount < 100) {
-        send(chatId, `❌ Invalid amount!\n\nMinimum withdrawal is ₹100.`);
-        return;
-      }
-      if (amount > userBal) {
-        send(chatId, `❌ Insufficient balance!\n\nYou have ₹${userBal}. Enter a lower amount.`);
-        return;
-      }
-      delete userState[chatId];
-      userState[chatId] = { action: "withdraw_method", amount };
-      send(chatId, `💸 Choose Withdraw method for ₹${amount}:`, withdrawMethodMenu());
-      return;
-    }
-
-    if (st.action === "custom_table_amount") {
-      const { gameType } = st;
-      const amount = parseInt(text);
-      if (isNaN(amount) || amount < 50) {
-        send(chatId, `❌ Invalid amount!`);
-        return;
-      }
-      delete userState[chatId];
-      handleJoin(chatId, gameType, amount);
-      return;
-    }
-
-    if (st.action === "withdraw_upi") {
-      const { amount } = st;
-      const upiId = text.trim().replace(/[`*_\[\]]/g, "");
-      userState[chatId] = { action: "withdraw_upi_confirm", amount, upiId };
-      sendMD(chatId,
-        `⚠️ Please confirm your UPI ID:\n\n` +
-        `UPI: ${tapCopy(upiId)}\n` +
-        `Is this correct?`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "✅ Confirm", callback_data: "wdl_confirm_upi" }, { text: "✏️ Edit UPI", callback_data: "wdl_edit_upi" }],
-            ]
-          },
-        });
-      return;
-    }
-
-  }
-
-  // ── Main menu buttons ──────────────────────────────────────────────────────
-  if (text === "💰 Deposit") {
-    send(chatId, "💰 Choose Deposit amount:", {
+    userState[chatId] = { action: "deposit_screenshot", amount };
+    const QR = `https://raw.githubusercontent.com/MARK417900/telegram-invite-bot/main/PaymentQR.jpg`;
+    bot.sendPhoto(chatId, QR, {
+      caption:
+        `💰 Deposit Amount ₹${amount}\n\n` +
+        `UPI ID: ${tapCopy("7891624054@mbk")}\n\n` +
+        `📷 After Payment send the screenshot of your transaction here.\n` +
+        `⚠ Screenshot must contain the UTR number.`,
+      parse_mode: "Markdown",
       reply_markup: {
-        inline_keyboard: [
-          [{ text: "₹50", callback_data: "deposit_50" }, { text: "₹100", callback_data: "deposit_100" }, { text: "₹200", callback_data: "deposit_200" }],
-          [{ text: "₹500", callback_data: "deposit_500" }, { text: "₹1000", callback_data: "deposit_1000" }],
-          [{ text: "✏️ Custom Amount", callback_data: "deposit_custom" }],
-        ]
+        keyboard: [[{ text: "❌ Cancel Deposit" }]],
+        resize_keyboard: true,
+        one_time_keyboard: true,
       },
-    });
+    }).catch(() => { });
     return;
   }
 
-  if (text === "💸 Withdraw") {
+  if (st.action === "custom_withdraw_amount") {
+    const amount = parseInt(text);
+    const userBal = users[chatId]?.balance || 0;
     const u = users[chatId];
-    send(chatId, `💸Select Withdraw Amount\nMinimum Withdraw: ₹100\n\nYour Balance: ₹${u?.balance || 0}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "₹100", callback_data: "withdraw_100" }, { text: "₹200", callback_data: "withdraw_200" }, { text: "₹300", callback_data: "withdraw_300" }],
-          [{ text: "₹500", callback_data: "withdraw_500" }, { text: "₹1000", callback_data: "withdraw_1000" }],
-          [{ text: "✏️ Custom Amount", callback_data: "withdraw_custom" }],
-        ]
-      },
-    });
-    return;
-
-  }
-
-  if (text === "⚡ Quick Ludo") {
-    requireGroupMembership(chatId, () => {
-      send(chatId, "⚡ Quick Ludo\nChoose entry fee 👇", {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "₹50", callback_data: "join_quick_50" }, { text: "₹100", callback_data: "join_quick_100" }, { text: "₹200", callback_data: "join_quick_200" }, { text: "₹300", callback_data: "join_quick_300" }],
-            [{ text: "₹500", callback_data: "join_quick_500" }, { text: "₹1000", callback_data: "join_quick_1000" }],
-            [{ text: "✏️ Custom Amount", callback_data: "table_custom_quick" }],
-          ]
-        },
-      });
-    });
-    return;
-  }
-
-  if (text === "🎲 Classic Ludo") {
-    requireGroupMembership(chatId, () => {
+    const gamesPlayed = u?.gamesPlayed || 0;
+    const hasDeposited = u?.hasDeposited || false;
+    if (gamesPlayed < 2 && !hasDeposited) {
       send(chatId,
-        `🎲 Classic Ludo — Choose Goti No.\n` +
-        `(kitne Goti ka match kheloge)`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "1 Goti", callback_data: "classic_1goti" },
-                { text: "2 Goti", callback_data: "classic_2goti" },
-                { text: "3 Goti", callback_data: "classic_3goti" },
-                { text: "4 Goti", callback_data: "classic_4goti" },
-              ],
-              [{ text: "❌ Cancel", callback_data: "back_menu" }],
-            ]
-          },
-        });
-    });
+        `🔒 Withdrawal Locked\n\n` +
+        `Complete any ONE of the following:\n` +
+        `• Play any 2 matches\n` +
+        `• Make any single deposit\n\n` +
+        `Your Status:\n` +
+        `Matches Played: ${gamesPlayed}/2\n\n` +
+        `Deposits Made: ${hasDeposited ? "Yes ✅" : "No ❌"}\n` +
+        `Once completed any one of the above, withdrawals will be enabled automatically.`);
+      return;
+    }
+    if (isNaN(amount) || amount < 100) {
+      send(chatId, `❌ Invalid amount!\n\nMinimum withdrawal is ₹100.`);
+      return;
+    }
+    if (amount > userBal) {
+      send(chatId, `❌ Insufficient balance!\n\nYou have ₹${userBal}. Enter a lower amount.`);
+      return;
+    }
+    delete userState[chatId];
+    userState[chatId] = { action: "withdraw_method", amount };
+    send(chatId, `💸 Choose Withdraw method for ₹${amount}:`, withdrawMethodMenu());
     return;
   }
 
-  if (text === "Snake Ladder") {
-    requireGroupMembership(chatId, () => {
-      send(chatId, "🐍 Snake & Ladder\nChoose entry fee 👇", {
+  if (st.action === "custom_table_amount") {
+    const { gameType } = st;
+    const amount = parseInt(text);
+    if (isNaN(amount) || amount < 50) {
+      send(chatId, `❌ Invalid amount!`);
+      return;
+    }
+    delete userState[chatId];
+    handleJoin(chatId, gameType, amount);
+    return;
+  }
+
+  if (st.action === "withdraw_upi") {
+    const { amount } = st;
+    const upiId = text.trim().replace(/[`*_\[\]]/g, "");
+    userState[chatId] = { action: "withdraw_upi_confirm", amount, upiId };
+    sendMD(chatId,
+      `⚠️ Please confirm your UPI ID:\n\n` +
+      `UPI: ${tapCopy(upiId)}\n` +
+      `Is this correct?`,
+      {
         reply_markup: {
           inline_keyboard: [
-            [{ text: "₹50", callback_data: "join_snake_50" }, { text: "₹100", callback_data: "join_snake_100" }, { text: "₹200", callback_data: "join_snake_200" }, { text: "₹300", callback_data: "join_snake_300" }],
-            [{ text: "₹500", callback_data: "join_snake_500" }, { text: "₹1000", callback_data: "join_snake_1000" }],
-            [{ text: "✏️ Custom Amount", callback_data: "table_custom_snake" }],
+            [{ text: "✅ Confirm", callback_data: "wdl_confirm_upi" }, { text: "✏️ Edit UPI", callback_data: "wdl_edit_upi" }],
           ]
         },
       });
-    });
     return;
   }
 
-  if (text === "👤 Profile") {
-    const u = users[chatId] || {};
-    const pd = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
-    const em = { idle: "😴", waiting: "⏳", "in-game": "🎮" }[u.status] || "😴";
-    sendMD(chatId,
-      `👤 Your Profile\n\n` +
-      `ID: ${tapCopy(chatId)}\n` +
-      `Name: ${u.name || "N/A"}\n` +
-      `Balance: ₹${u.balance || 0}\n` +
-      `Refer Count: ${u.referCount || 0}\n` +
-      `Games Played: ${u.gamesPlayed || 0}\n` +
-      `Games Won: ${u.gamesWon || 0}\n` +
-      `Status: ${em} ${u.status || "idle"}` +
-      (pd ? `\n\nPending Deposit: ₹${pd.amount} (TXN: ${tapCopy(pd.txnId)})` : ""),
-      mainMenu());
-    return;
-  }
 
-  if (text === "🤝 Refer & Earn") {
-    const u = users[chatId] || {};
-    sendMD(chatId,
-      `🤝 Your Referral Link:\n` +
-      `${`https://t.me/Ludo\\_AddaBot?start=${chatId}`}\n\n` +
-      `Earn ₹${REFER_REWARD} for each friend who valid joins and plays their first match!`
-    );
-    return;
-  }
+if (text === "👤 Profile") {
+  const u = users[chatId] || {};
+  const pd = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
+  const em = { idle: "😴", waiting: "⏳", "in-game": "🎮" }[u.status] || "😴";
+  sendMD(chatId,
+    `👤 Your Profile\n\n` +
+    `ID: ${tapCopy(chatId)}\n` +
+    `Name: ${u.name || "N/A"}\n` +
+    `Balance: ₹${u.balance || 0}\n` +
+    `Refer Count: ${u.referCount || 0}\n` +
+    `Games Played: ${u.gamesPlayed || 0}\n` +
+    `Games Won: ${u.gamesWon || 0}\n` +
+    `Status: ${em} ${u.status || "idle"}` +
+    (pd ? `\n\nPending Deposit: ₹${pd.amount} (TXN: ${tapCopy(pd.txnId)})` : ""),
+    mainMenu());
+  return;
+}
 
-  if (text === "🆘 Support") {
-    send(chatId, "🆘 Support\nChoose an option:", {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "❓ FAQ", callback_data: "faq" }],
-          [{ text: "📞 Contact Admin", url: "https://t.me/LUDO_HELPERBOT" }],
-          [{ text: "🐞 Report Bug", url: "https://t.me/MARK41_helperBot" }],
-        ]
-      },
-    });
-    return;
-  }
-});
+if (text === "🤝 Refer & Earn") {
+  const u = users[chatId] || {};
+  sendMD(chatId,
+    `🤝 Your Referral Link:\n` +
+    `${`https://t.me/Ludo\\_AddaBot?start=${chatId}`}\n\n` +
+    `Earn ₹${REFER_REWARD} for each friend who valid joins and plays their first match!`
+  );
+  return;
+}
+
+if (text === "🆘 Support") {
+  send(chatId, "🆘 Support\nChoose an option:", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "❓ FAQ", callback_data: "faq" }],
+        [{ text: "📞 Contact Admin", url: "https://t.me/LUDO_HELPERBOT" }],
+        [{ text: "🐞 Report Bug", url: "https://t.me/MARK41_helperBot" }],
+      ]
+    },
+  });
+  return;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  CALLBACK QUERY HANDLER
