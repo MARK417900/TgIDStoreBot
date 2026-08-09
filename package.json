@@ -1,0 +1,13 @@
+{
+  "name": "telegram-ludo-bot",
+  "version": "1.0.0",
+  "description": "Telegram Ludo Bot with deposit, withdraw and game modes",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  }, 
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.64.0"
+  }
+}
