@@ -17,10 +17,10 @@ const bot = new TelegramBot(token, { polling: true });
 const ADMIN_ID = 8521844327;
 const GROUP_ID = -1003345786666;
 const GROUP_INVITE_LINK = "https://t.me/+pNRg_oJqSaFlZWE1";
-const REFER_REWARD = 20;
+const REFER_REWARD = 10;
 
 // ─── BUY ACCOUNT CONFIG ────────────────────────────────────────────────────
-const ACCOUNT_PRICE = 100; // ₹ per account — change to whatever price you want
+const ACCOUNT_PRICE = 40; // ₹ per account — change to whatever price you want
 const ACCOUNT_MAX_QTY = 20;
 const PAYMENT_QR = "https://raw.githubusercontent.com/MARK417900/telegram-invite-bot/main/PaymentQR.jpg";
 
@@ -120,8 +120,9 @@ function adminMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: "📢 Broadcast" }, { text: "👥 All Users" }, { text: "📊 Bot Status" }],
-        [{ text: "👤 MSG User" }, { text: botOnline ? "🔴 Turn Bot OFF" : "🟢 Turn Bot ON" }, { text: "👤 User Info" }],
+        [{ text: "📢 Broadcast" }, { text: "👥 All Users" }],
+        [ { text: "📊 Bot Status" }],
+        [{ text: "👤 MSG User" }, { text: botOnline ? "🔴 Bot OFF" : "🟢 Bot ON" }, { text: "👤 User Info" }],
         [{ text: "🔙 User Menu" }],
       ],
       resize_keyboard: true,
@@ -450,7 +451,7 @@ bot.on("message", msg => {
         `Total Amount: ₹${s24.pot24h}`);
       return;
     }
-    if (text === "🔴 Turn Bot OFF" || text === "🟢 Turn Bot ON") {
+    if (text === "🔴 Bot OFF" || text === "🟢 Bot ON") {
       botOnline = !botOnline;
       send(chatId, botOnline ? "🟢 Bot is now ONLINE!" : "🔴 Bot is now OFFLINE!", adminMenu());
       return;
@@ -481,136 +482,7 @@ bot.on("message", msg => {
   // ══════════════════════ USER ═══════════════════════════════════════════════
   if (!botOnline) { send(chatId, "🔴 Bot is offline for maintenance."); return; }
 
-  // ── GAME FLOW KEYBOARD HANDLERS ────────────────────────────────────────────
-
   
-
-  // ── User state machine ────────────────────────────────────────────────────
-  const st = userState[chatId];
-  if (st) {
-    if (st.action === "send_room_code") {
-      const t = tables[st.tableId];
-      if (!t || t.status !== "room_pending") {
-        delete userState[chatId];
-        send(chatId, "⚠️ Table no longer available.", mainMenu());
-        return;
-      }
-      delete userState[chatId];
-      sendRoomCodeToOpponent(st.tableId, text.trim());
-      return;
-    }
-    if (st.action === "win_proof_screenshot") {
-      send(chatId, "📸 Please send a screenshot image as proof, not text.");
-      return;
-    }
-
-    // ── BUY ACCOUNT: SCREENSHOT STAGE ───────────────────────────────────────
-    if (st.action === "buy_account_screenshot") {
-      if (text === "❌ Cancel Purchase") {
-        delete userState[chatId];
-        send(chatId, "❌ Purchase cancelled.", mainMenu());
-        return;
-      }
-      send(chatId, "📸 Please send a screenshot image as proof, not text.");
-      return;
-    }
-
-    // ── CUSTOM AMOUNT HANDLERS ──────────────────────────────────────────────
-
-    if (st.action === "custom_deposit_amount") {
-      const amount = parseInt(text);
-      if (isNaN(amount) || amount < 50) {
-        send(chatId, `❌ Invalid amount!`);
-        return;
-      }
-      delete userState[chatId];
-      const ep = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
-      if (ep) {
-        send(chatId, `Pending deposit exists!\n\nTXN: ${ep.txnId} | ₹${ep.amount}\n\nWait for admin to process it first.`, mainMenu());
-        return;
-      }
-      userState[chatId] = { action: "deposit_screenshot", amount };
-      const QR = `https://raw.githubusercontent.com/MARK417900/telegram-invite-bot/main/PaymentQR.jpg`;
-      bot.sendPhoto(chatId, QR, {
-        caption:
-          `💰 Deposit Amount ₹${amount}\n\n` +
-          `UPI ID: ${tapCopy("7891624054@mbk")}\n\n` +
-          `📷 After Payment send the screenshot of your transaction here.\n` +
-          `⚠ Screenshot must contain the UTR number.`,
-        parse_mode: "Markdown",
-        reply_markup: {
-          keyboard: [[{ text: "❌ Cancel Deposit" }]],
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      }).catch(() => { });
-      return;
-    }
-
-    if (st.action === "custom_withdraw_amount") {
-      const amount = parseInt(text);
-      const userBal = users[chatId]?.balance || 0;
-      const u = users[chatId];
-      const gamesPlayed = u?.gamesPlayed || 0;
-      const hasDeposited = u?.hasDeposited || false;
-      if (gamesPlayed < 2 && !hasDeposited) {
-        send(chatId,
-          `🔒 Withdrawal Locked\n\n` +
-          `Complete any ONE of the following:\n` +
-          `• Play any 2 matches\n` +
-          `• Make any single deposit\n\n` +
-          `Your Status:\n` +
-          `Matches Played: ${gamesPlayed}/2\n\n` +
-          `Deposits Made: ${hasDeposited ? "Yes ✅" : "No ❌"}\n` +
-          `Once completed any one of the above, withdrawals will be enabled automatically.`);
-        return;
-      }
-      if (isNaN(amount) || amount < 100) {
-        send(chatId, `❌ Invalid amount!\n\nMinimum withdrawal is ₹100.`);
-        return;
-      }
-      if (amount > userBal) {
-        send(chatId, `❌ Insufficient balance!\n\nYou have ₹${userBal}. Enter a lower amount.`);
-        return;
-      }
-      delete userState[chatId];
-      userState[chatId] = { action: "withdraw_method", amount };
-      send(chatId, `💸 Choose Withdraw method for ₹${amount}:`, withdrawMethodMenu());
-      return;
-    }
-
-    if (st.action === "custom_table_amount") {
-      const { gameType } = st;
-      const amount = parseInt(text);
-      if (isNaN(amount) || amount < 50) {
-        send(chatId, `❌ Invalid amount!`);
-        return;
-      }
-      delete userState[chatId];
-      handleJoin(chatId, gameType, amount);
-      return;
-    }
-
-    if (st.action === "withdraw_upi") {
-      const { amount } = st;
-      const upiId = text.trim().replace(/[`*_\[\]]/g, "");
-      userState[chatId] = { action: "withdraw_upi_confirm", amount, upiId };
-      sendMD(chatId,
-        `⚠️ Please confirm your UPI ID:\n\n` +
-        `UPI: ${tapCopy(upiId)}\n` +
-        `Is this correct?`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "✅ Confirm", callback_data: "wdl_confirm_upi" }, { text: "✏️ Edit UPI", callback_data: "wdl_edit_upi" }],
-            ]
-          },
-        });
-      return;
-    }
-
-  }
-
   if (text === "👤 Profile") {
     const u = users[chatId] || {};
     const pd = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
@@ -640,8 +512,8 @@ bot.on("message", msg => {
     const u = users[chatId] || {};
     sendMD(chatId,
       `🤝 Your Referral Link:\n` +
-      `${`https://t.me/Ludo\\_AddaBot?start=${chatId}`}\n\n` +
-      `Earn ₹${REFER_REWARD} for each friend who valid joins and plays their first match!`
+      `${`https://t.me/TgStoreBot?start=${chatId}`}\n\n` +
+      `Earn ₹${REFER_REWARD} for each valid friend who buy atleat one account!`
     );
     return;
   }
@@ -651,7 +523,6 @@ bot.on("message", msg => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "📞 Contact Admin", url: "https://t.me/Mark41_001" }],
-          [{ text: "🐞 Report Bug", url: "https://t.me/MARK41_helperBot" }],
         ]
       },
     });
@@ -801,41 +672,6 @@ bot.on("callback_query", query => {
     return;
   }
 
-  // ── CUSTOM AMOUNT CALLBACKS ────────────────────────────────────────────────
-
-  if (data === "deposit_custom") {
-    bot.deleteMessage(chatId, msgId).catch(() => { });
-    userState[chatId] = { action: "custom_deposit_amount" };
-    send(chatId,
-      `💰Enter Deposit Amount`,
-      cancelKb());
-    return;
-  }
-
-  if (data === "withdraw_custom") {
-    const userBal = users[chatId]?.balance || 0;
-    bot.deleteMessage(chatId, msgId).catch(() => { });
-    userState[chatId] = { action: "custom_withdraw_amount" };
-    send(chatId,
-      `💰 Enter Withdraw Amount\n\nMinimum withdraw: ₹100 \n Your Balance: ₹${userBal}`,
-      cancelKb());
-    return;
-  }
-
-  if (data.startsWith("table_custom_")) {
-    const gameType = data.replace("table_custom_", "");
-    bot.deleteMessage(chatId, msgId).catch(() => { });
-    requireGroupMembership(chatId, () => {
-      userState[chatId] = { action: "custom_table_amount", gameType };
-      send(chatId,
-        `✏️ Enter Entry Fee for ${gameLabel(gameType)}`,
-        cancelKb());
-    });
-    return;
-  }
-
-  // ── END CUSTOM AMOUNT CALLBACKS ────────────────────────────────────────────
-
   if (data.startsWith("join_")) {
     const withoutPrefix = data.slice(5); // remove "join_"
     const lastUnder = withoutPrefix.lastIndexOf("_");
@@ -868,17 +704,6 @@ bot.on("callback_query", query => {
     delete userState[tid];
     send(chatId, `✅ User ${u.name} (${tid}) state has been reset to idle.`);
     send(tid, `🔄 Your account state was reset by admin.\n\nIf you had a pending game it has been cancelled and your entry fee refunded.`, mainMenu());
-    return;
-  }
-
-  if (data === "faq") {
-    send(chatId,
-      `❓ FAQ\n\n` +
-      `How to deposit?\nTap Deposit → choose amount → pay via UPI → send screenshot.\n\n` +
-      `How to withdraw?\nTap Withdraw → choose amount → enter UPI ID.\nRequires 2 matches played OR 1 deposit.\n\n` +
-      `How is the winner decided?\nTap "I Won" after game → submit screenshot → Admin verifies.\n\n` +
-      `Refer & Earn?\nEarn ₹${REFER_REWARD} when your referred friend plays their first match.\n\n` +
-      `Platform fee?\n${PLATFORM_CUT_PERCENT}% is deducted from the pot as platform fee.`);
     return;
   }
 });
