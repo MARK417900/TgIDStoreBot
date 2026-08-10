@@ -21,7 +21,7 @@ const REFER_REWARD = 10;
 
 // ─── BUY ACCOUNT CONFIG ────────────────────────────────────────────────────
 const ACCOUNT_PRICE = 40; // ₹ per account — change to whatever price you want
-const ACCOUNT_MAX_QTY = 20;
+const ACCOUNT_MAX_QTY = 10;
 const PAYMENT_QR = "https://raw.githubusercontent.com/MARK417900/telegram-invite-bot/main/PaymentQR.jpg";
 
 // ─── FIX 3: Escape special Markdown characters in user-supplied text ──────────
@@ -433,18 +433,12 @@ bot.on("message", msg => {
       return;
     }
     if (text === "📊 Bot Status") {
-      const active = Object.values(tables).filter(t => t.status === "active").length;
-      const open = Object.values(tables).filter(t => t.status === "open").length;
-      const pDep = Object.values(pendingDeposits).filter(d => d.status === "pending").length;
-      const pWdl = Object.values(pendingWithdrawals).filter(w => w.status === "pending").length;
-      const pClaim = Object.values(pendingWinClaims).filter(c => c.status === "pending").length;
       const totalUsers = Object.keys(users).filter(id => +id !== ADMIN_ID).length;
       const s24 = get24hStats();
       send(chatId,
         `📊 Bot Status\n\n` +
         `Status: ${botOnline ? "🟢 Online" : "🔴 Offline"}\n` +
         `Total Users: ${totalUsers}\n` +
-        `Pending Deposits: ${pDep}\n` +
         `━━━━━━━━━━━━━━━━\n` +
         `⏰ Last 24 Hours\n` +
         `Active Users: ${s24.activeUsers}\n` +
@@ -513,7 +507,7 @@ bot.on("message", msg => {
     sendMD(chatId,
       `🤝 Your Referral Link:\n` +
       `${`https://t.me/TgStoreBot?start=${chatId}`}\n\n` +
-      `Earn ₹${REFER_REWARD} for each valid friend who buy atleat one account!`
+      `Earn ₹${REFER_REWARD} for each valid friend who buy atleast one account !`
     );
     return;
   }
@@ -550,7 +544,7 @@ bot.on("callback_query", query => {
     isGroupMember(chatId).then(isMember => {
       if (isMember) {
         bot.deleteMessage(chatId, msgId).catch(() => { });
-        send(chatId, `🎲 Welcome to Ludo Adda!\nLet's Play and Win real money!!!`, mainMenu());
+        send(chatId, `🎲 Welcome in Marks Community !!`, mainMenu());
       } else {
         send(chatId,
           `❌ You haven't joined yet!\n\nPlease join the group first, then tap "I've Joined" again.`,
@@ -672,24 +666,6 @@ bot.on("callback_query", query => {
     return;
   }
 
-  if (data.startsWith("join_")) {
-    const withoutPrefix = data.slice(5); // remove "join_"
-    const lastUnder = withoutPrefix.lastIndexOf("_");
-    const gameType = withoutPrefix.slice(0, lastUnder);   // everything before last "_"
-    const fee = parseInt(withoutPrefix.slice(lastUnder + 1)); // everything after last "_"
-    if (!isGroupCallback) bot.deleteMessage(chatId, msgId).catch(() => { });
-    handleJoin(chatId, gameType, fee);
-    return;
-  }
-
-  if (data.startsWith("bal_add_") || data.startsWith("bal_ded_")) {
-    const isAdd = data.startsWith("bal_add_");
-    const tid = parseInt(data.split("_").pop());
-    if (!users[tid]) { send(chatId, "❌ User not found."); return; }
-    adminState[chatId] = { action: isAdd ? "bal_add" : "bal_ded", targetId: tid };
-    send(chatId, `${isAdd ? "Add" : "Deduct"} balance for ${users[tid].name}\n\nEnter amount (₹):`, cancelKb());
-    return;
-  }
 
   if (data.startsWith("reset_state_")) {
     const tid = parseInt(data.replace("reset_state_", ""));
