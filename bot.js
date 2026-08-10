@@ -34,26 +34,14 @@ function escMD(text) {
 let users = {};
 let pendingDeposits = {};
 let pendingAccountOrders = {};
+let stockItems = [];          // pool of account strings available to sell, e.g. "email:pass"
+let adminReplyMap = {};       // { adminMessageId: userChatId } — lets admin swipe-reply to relay a message back to a user
 let botOnline = true;
 let adminState = {};
 let userState = {};
 
 function genOrderId() {
   return "ACC" + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1000);
-}
-
-function markUserActive(userId) {
-  stats.activeUsers24h[userId] = Date.now();
-}
-
-function get24hStats() {
-  const since = Date.now() - 24 * 60 * 60 * 1000;
-  const recent = stats.completedMatches.filter(m => m.completedAt >= since);
-  const matches24h = recent.length;
-  const pot24h = recent.reduce((s, m) => s + m.pot, 0);
-  const commission24h = recent.reduce((s, m) => s + m.commission, 0);
-  const activeUsers = Object.values(stats.activeUsers24h).filter(t => t >= since).length;
-  return { matches24h, pot24h, commission24h, activeUsers };
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -120,8 +108,9 @@ function adminMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: "📢 Broadcast" },{ text: "📊 Bot Status" }],
+        [{ text: "📢 Broadcast" }, { text: "📊 Bot Status" }],
         [{ text: "👤 MSG User" }, { text: botOnline ? "🔴 Bot OFF" : "🟢 Bot ON" }, { text: "👥 All Users" }],
+        [{ text: "📦 Add Stock" }],
         [{ text: "🔙 User Menu" }],
       ],
       resize_keyboard: true,
@@ -312,6 +301,22 @@ bot.on("message", msg => {
 
   // ══════════════════════ ADMIN ══════════════════════════════════════════════
   if (isAdmin(chatId)) {
+
+    // ── SWIPE-REPLY RELAY: admin replies to a forwarded user message ────────
+    // In Telegram, swiping right on a message (or "press & hold → Reply") sets
+    // msg.reply_to_message to that message. We map that back to the user it
+    // came from and relay the admin's reply straight to them.
+    if (msg.reply_to_message && adminReplyMap[msg.reply_to_message.message_id] && text) {
+      const targetUserId = adminReplyMap[msg.reply_to_message.message_id];
+      if (users[targetUserId]) {
+        send(targetUserId, `💬 Message from Admin:\n\n${text}`, mainMenu());
+        send(chatId, `✅ Reply sent to ${users[targetUserId]?.name || targetUserId}.`);
+      } else {
+        send(chatId, `❌ Could not find that user anymore.`);
+      }
+      return;
+    }
+
     const st = adminState[chatId];
 
     if (st) {
@@ -372,6 +377,34 @@ bot.on("message", msg => {
         delete adminState[chatId];
         return;
       }
+
+      // ── ADD STOCK ───────────────────────────────────────────────────────
+      if (st.action === "add_stock") {
+        const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+        if (!lines.length) { send(chatId, "❌ No valid lines found. Send at least one item, or tap Cancel."); return; }
+        stockItems.push(...lines);
+        delete adminState[chatId];
+        send(chatId, `✅ Added ${lines.length} item(s) to stock.\n📦 Total stock now: ${stockItems.length}`, adminMenu());
+        return;
+      }
+
+      // ── MANUAL ACCOUNT DELIVERY (used when stock is insufficient on approve) ─
+      if (st.action === "deliver_account_manual") {
+        const order = pendingAccountOrders[st.orderId];
+        if (!order) { send(chatId, "❌ Order not found."); delete adminState[chatId]; return; }
+        order.status = "approved";
+        order.deliveredItems = [text];
+        delete adminState[chatId];
+        send(chatId, `✅ Order ${st.orderId} approved & delivered manually.`, adminMenu());
+        send(order.chatId,
+          `✅ Your account purchase has been approved!\n\n` +
+          `Order ID: ${st.orderId}\n` +
+          `Accounts: ${order.quantity}\n` +
+          `Amount Paid: ₹${order.price}\n\n` +
+          `Your account details:\n${text}`,
+          mainMenu());
+        return;
+      }
     }
 
     // ── Admin menu buttons ──────────────────────────────────────────────────
@@ -386,17 +419,46 @@ bot.on("message", msg => {
       send(chatId, "Enter User ID:", cancelKb());
       return;
     }
+    if (text === "📦 Add Stock") {
+      adminState[chatId] = { action: "add_stock" };
+      send(chatId,
+        `📦 Add Stock\n\n` +
+        `Send account details, one per line. Example:\n` +
+        `user1@mail.com:pass123\n` +
+        `user2@mail.com:pass456\n\n` +
+        `Current stock: ${stockItems.length}`,
+        cancelKb());
+      return;
+    }
     if (text === "📊 Bot Status") {
       const totalUsers = Object.keys(users).filter(id => +id !== ADMIN_ID).length;
-      const s24 = get24hStats();
+      const allOrders = Object.values(pendingAccountOrders);
+      const pendingOrders = allOrders.filter(o => o.status === "pending").length;
+      const approvedOrders = allOrders.filter(o => o.status === "approved");
+      const totalAccountsSold = approvedOrders.reduce((s, o) => s + o.quantity, 0);
+      const totalRevenue = approvedOrders.reduce((s, o) => s + o.price, 0);
+      const pendingDepositsCount = Object.values(pendingDeposits).filter(d => d.status === "pending").length;
+
+      const since = Date.now() - 24 * 60 * 60 * 1000;
+      const orders24h = approvedOrders.filter(o => o.timestamp && new Date(o.timestamp).getTime() >= since);
+      const revenue24h = orders24h.reduce((s, o) => s + o.price, 0);
+      const accounts24h = orders24h.reduce((s, o) => s + o.quantity, 0);
+
       send(chatId,
         `📊 Bot Status\n\n` +
         `Status: ${botOnline ? "🟢 Online" : "🔴 Offline"}\n` +
         `Total Users: ${totalUsers}\n` +
+        `📦 Stock Available: ${stockItems.length}\n` +
+        `Pending Orders: ${pendingOrders}\n` +
+        `Pending Deposits: ${pendingDepositsCount}\n` +
+        `━━━━━━━━━━━━━━━━\n` +
+        `📈 All-Time\n` +
+        `Accounts Sold: ${totalAccountsSold}\n` +
+        `Total Revenue: ₹${totalRevenue}\n` +
         `━━━━━━━━━━━━━━━━\n` +
         `⏰ Last 24 Hours\n` +
-        `Active Users: ${s24.activeUsers}\n` +
-        `Total Amount: ₹${s24.pot24h}`);
+        `Accounts Sold: ${accounts24h}\n` +
+        `Revenue: ₹${revenue24h}`);
       return;
     }
     if (text === "🔴 Bot OFF" || text === "🟢 Bot ON") {
@@ -425,6 +487,48 @@ bot.on("message", msg => {
   // ══════════════════════ USER ═══════════════════════════════════════════════
   if (!botOnline) { send(chatId, "🔴 Bot is offline for maintenance."); return; }
 
+  // ── User state machine ────────────────────────────────────────────────────
+  const st = userState[chatId];
+  if (st) {
+    // ── MESSAGE ADMIN ────────────────────────────────────────────────────
+    if (st.action === "messaging_admin") {
+      if (text === "❌ Cancel") {
+        delete userState[chatId];
+        send(chatId, "❌ Cancelled.", mainMenu());
+        return;
+      }
+      if (!text) {
+        send(chatId, "📝 Please send a text message.");
+        return;
+      }
+      delete userState[chatId];
+      const u = users[chatId] || {};
+      bot.sendMessage(ADMIN_ID,
+        `✉️ New message from a user\n\n` +
+        `Name: ${u.name || "N/A"}\n` +
+        `Username: @${u.username || "N/A"}\n` +
+        `ID: ${chatId}\n\n` +
+        `Message:\n${text}\n\n` +
+        `↩️ Swipe / press-hold and reply to THIS message to respond directly.`
+      ).then(sentMsg => {
+        adminReplyMap[sentMsg.message_id] = chatId;
+      }).catch(() => { });
+      send(chatId, "✅ Your message has been sent to admin. They'll reply here soon.", mainMenu());
+      return;
+    }
+
+    // ── BUY ACCOUNT: SCREENSHOT STAGE ───────────────────────────────────────
+    if (st.action === "buy_account_screenshot") {
+      if (text === "❌ Cancel Purchase") {
+        delete userState[chatId];
+        send(chatId, "❌ Purchase cancelled.", mainMenu());
+        return;
+      }
+      send(chatId, "📸 Please send a screenshot image as proof, not text.");
+      return;
+    }
+  }
+
   if (text === "👤 Profile") {
     const u = users[chatId] || {};
     const pd = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
@@ -435,6 +539,18 @@ bot.on("message", msg => {
       `Balance: ₹${u.balance || 0}\n` +
       `Refer Count: ${u.referCount || 0}\n` +
       (pd ? `\n\nPending Deposit: ₹${pd.amount} (TXN: ${tapCopy(pd.txnId)})` : ""),
+      mainMenu());
+    return;
+  }
+
+  if (text === "Stock") {
+    send(chatId,
+      `📦 Stock Status\n\n` +
+      `Available Accounts: ${stockItems.length}\n` +
+      `Price: ₹${ACCOUNT_PRICE} per account\n\n` +
+      (stockItems.length > 0
+        ? `Tap "🛒 Buy Account" to purchase now!`
+        : `Currently out of stock. Please check back later.`),
       mainMenu());
     return;
   }
@@ -463,6 +579,7 @@ bot.on("message", msg => {
       reply_markup: {
         inline_keyboard: [
           [{ text: "📞 Contact Admin", url: "https://t.me/Mark41_001" }],
+          [{ text: "✉️ Message Admin (in bot)", callback_data: "msg_admin_start" }],
         ]
       },
     });
@@ -504,6 +621,14 @@ bot.on("callback_query", query => {
           });
       }
     });
+    return;
+  }
+
+  // ── MESSAGE ADMIN: START ────────────────────────────────────────────────
+  if (data === "msg_admin_start") {
+    userState[chatId] = { action: "messaging_admin" };
+    bot.deleteMessage(chatId, msgId).catch(() => { });
+    send(chatId, "✉️ Type your message for admin below. It will be forwarded directly.", cancelKb("❌ Cancel"));
     return;
   }
 
@@ -591,23 +716,43 @@ bot.on("callback_query", query => {
       send(chatId, "❌ Order not found or already processed.");
       return;
     }
-    order.status = isApprove ? "approved" : "rejected";
-    if (isApprove) {
-      send(chatId, `✅ Order ${orderId} approved.\nUser: ${users[order.chatId]?.name || order.chatId}\nQty: ${order.quantity}`);
-      send(order.chatId,
-        `✅ Your account purchase has been approved!\n\n` +
-        `Order ID: ${orderId}\n` +
-        `Accounts: ${order.quantity}\n` +
-        `Amount Paid: ₹${order.price}\n\n` +
-        `Our team will deliver your account details shortly.`,
-        mainMenu());
-    } else {
+
+    if (!isApprove) {
+      order.status = "rejected";
       send(chatId, `❌ Order ${orderId} rejected.`);
       send(order.chatId,
         `❌ Your account purchase request was rejected.\n\n` +
         `Order ID: ${orderId}\n\n` +
         `Please contact support if you believe this is a mistake.`,
         mainMenu());
+      return;
+    }
+
+    // Approve — try to auto-deliver from stock first
+    if (stockItems.length >= order.quantity) {
+      const delivered = stockItems.splice(0, order.quantity);
+      order.status = "approved";
+      order.deliveredItems = delivered;
+      send(chatId,
+        `✅ Order ${orderId} approved & auto-delivered from stock.\n` +
+        `User: ${users[order.chatId]?.name || order.chatId}\n` +
+        `Qty: ${order.quantity}\n` +
+        `Remaining Stock: ${stockItems.length}`);
+      sendMD(order.chatId,
+        `✅ Your account purchase has been approved!\n\n` +
+        `Order ID: ${orderId}\n` +
+        `Accounts: ${order.quantity}\n` +
+        `Amount Paid: ₹${order.price}\n\n` +
+        `Your account details:\n` +
+        delivered.map(d => tapCopy(d)).join("\n"),
+        mainMenu());
+    } else {
+      // Not enough stock — ask admin to type the delivery message manually
+      adminState[chatId] = { action: "deliver_account_manual", orderId };
+      send(chatId,
+        `⚠️ Not enough stock! (Have ${stockItems.length}, need ${order.quantity})\n\n` +
+        `Type the account details to send to the user manually, or tap 📦 Add Stock first and then approve again.`,
+        cancelKb());
     }
     return;
   }
@@ -634,7 +779,19 @@ bot.on("callback_query", query => {
 // ─────────────────────────────────────────────────────────────────────────────
 bot.on("photo", msg => {
   const chatId = msg.chat.id;
-  if (isAdmin(chatId)) return;
+
+  if (isAdmin(chatId)) {
+    // ── SWIPE-REPLY RELAY WITH A PHOTO ────────────────────────────────────
+    if (msg.reply_to_message && adminReplyMap[msg.reply_to_message.message_id]) {
+      const targetUserId = adminReplyMap[msg.reply_to_message.message_id];
+      const fileId = msg.photo[msg.photo.length - 1].file_id;
+      bot.sendPhoto(targetUserId, fileId, {
+        caption: msg.caption ? `💬 Message from Admin:\n\n${msg.caption}` : "💬 Message from Admin",
+      }).then(() => send(chatId, `✅ Photo reply sent to ${users[targetUserId]?.name || targetUserId}.`))
+        .catch(() => send(chatId, "❌ Failed to send photo reply."));
+    }
+    return;
+  }
 
   const st = userState[chatId];
   if (!st) return;
