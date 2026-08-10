@@ -409,8 +409,9 @@ bot.on("message", msg => {
 
       if (st.action === "user_info_id") {
         const tid = +text;
-        delete adminState[chatId];
         sendUserInfoPanel(chatId, tid);
+        delete adminState[chatId];
+        mainMenu();
         return;
       }
     }
