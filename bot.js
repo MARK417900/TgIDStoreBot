@@ -120,9 +120,8 @@ function adminMenu() {
   return {
     reply_markup: {
       keyboard: [
-        [{ text: "📢 Broadcast" }, { text: "👥 All Users" }],
-        [ { text: "📊 Bot Status" }],
-        [{ text: "👤 MSG User" }, { text: botOnline ? "🔴 Bot OFF" : "🟢 Bot ON" }, { text: "👤 User Info" }],
+        [{ text: "📢 Broadcast" },{ text: "📊 Bot Status" }],
+        [{ text: "👤 MSG User" }, { text: botOnline ? "🔴 Bot OFF" : "🟢 Bot ON" }, { text: "👥 All Users" }],
         [{ text: "🔙 User Menu" }],
       ],
       resize_keyboard: true,
@@ -373,46 +372,6 @@ bot.on("message", msg => {
         delete adminState[chatId];
         return;
       }
-
-      if (st.action === "bal_id") {
-        const tid = +text;
-        if (!users[tid]) { send(chatId, `❌ User ${text} not found.`); delete adminState[chatId]; return; }
-        adminState[chatId] = { action: "bal_type", targetId: tid };
-        send(chatId,
-          `User: ${users[tid].name}\nBalance: ₹${users[tid].balance}\n\nChoose action:`,
-          {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: "➕ Add", callback_data: `bal_add_${tid}` }, { text: "➖ Deduct", callback_data: `bal_ded_${tid}` }],
-              ]
-            },
-          });
-        return;
-      }
-
-      if (st.action === "bal_add" || st.action === "bal_ded") {
-        const amt = parseFloat(text);
-        if (isNaN(amt) || amt <= 0) { send(chatId, "❌ Invalid amount."); return; }
-        const tid = st.targetId;
-        const isAdd = st.action === "bal_add";
-        if (!isAdd && users[tid].balance < amt) {
-          send(chatId, `❌ Balance too low (₹${users[tid].balance}).`);
-          delete adminState[chatId];
-          return;
-        }
-        users[tid].balance += isAdd ? amt : -amt;
-        send(chatId, `✅ ₹${amt} ${isAdd ? "added to" : "deducted from"} ${users[tid].name}\nNew balance: ₹${users[tid].balance}`, adminMenu());
-        send(tid, `💰 Balance Update!\n\n${isAdd ? "+" : "-"}₹${amt}\nNew Balance: ₹${users[tid].balance}`);
-        delete adminState[chatId];
-        return;
-      }
-
-      if (st.action === "user_info_id") {
-        const tid = +text;
-        delete adminState[chatId];
-        sendUserInfoPanel(chatId, tid);
-        return;
-      }
     }
 
     // ── Admin menu buttons ──────────────────────────────────────────────────
@@ -424,11 +383,6 @@ bot.on("message", msg => {
     }
     if (text === "👤 MSG User") {
       adminState[chatId] = { action: "msg_user_id" };
-      send(chatId, "Enter User ID:", cancelKb());
-      return;
-    }
-    if (text === "💰 Balance Update") {
-      adminState[chatId] = { action: "bal_id" };
       send(chatId, "Enter User ID:", cancelKb());
       return;
     }
@@ -462,11 +416,6 @@ bot.on("message", msg => {
       });
       return;
     }
-    if (text === "👤 User Info") {
-      adminState[chatId] = { action: "user_info_id" };
-      send(chatId, "Enter the User ID", cancelKb());
-      return;
-    }
     if (text === "🔙 User Menu") {
       send(chatId, "Switched to User Menu.", mainMenu());
       return;
@@ -476,18 +425,15 @@ bot.on("message", msg => {
   // ══════════════════════ USER ═══════════════════════════════════════════════
   if (!botOnline) { send(chatId, "🔴 Bot is offline for maintenance."); return; }
 
-  
   if (text === "👤 Profile") {
     const u = users[chatId] || {};
     const pd = Object.values(pendingDeposits).find(d => d.chatId === chatId && d.status === "pending");
-    const em = { idle: "😴", waiting: "⏳", "in-game": "🎮" }[u.status] || "😴";
     sendMD(chatId,
       `👤 Your Profile\n\n` +
       `ID: ${tapCopy(chatId)}\n` +
       `Name: ${u.name || "N/A"}\n` +
       `Balance: ₹${u.balance || 0}\n` +
       `Refer Count: ${u.referCount || 0}\n` +
-      `Status: ${em} ${u.status || "idle"}` +
       (pd ? `\n\nPending Deposit: ₹${pd.amount} (TXN: ${tapCopy(pd.txnId)})` : ""),
       mainMenu());
     return;
@@ -665,7 +611,6 @@ bot.on("callback_query", query => {
     }
     return;
   }
-
 
   if (data.startsWith("reset_state_")) {
     const tid = parseInt(data.replace("reset_state_", ""));
