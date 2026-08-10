@@ -19,6 +19,11 @@ const GROUP_ID = -1003345786666;
 const GROUP_INVITE_LINK = "https://t.me/+pNRg_oJqSaFlZWE1";
 const REFER_REWARD = 20;
 
+// ─── BUY ACCOUNT CONFIG ────────────────────────────────────────────────────
+const ACCOUNT_PRICE = 100; // ₹ per account — change to whatever price you want
+const ACCOUNT_MAX_QTY = 20;
+const PAYMENT_QR = "https://raw.githubusercontent.com/MARK417900/telegram-invite-bot/main/PaymentQR.jpg";
+
 // ─── FIX 3: Escape special Markdown characters in user-supplied text ──────────
 function escMD(text) {
   if (!text) return "";
@@ -28,10 +33,14 @@ function escMD(text) {
 // ─── IN-MEMORY STORE ──────────────────────────────────────────────────────────
 let users = {};
 let pendingDeposits = {};
+let pendingAccountOrders = {};
 let botOnline = true;
 let adminState = {};
 let userState = {};
 
+function genOrderId() {
+  return "ACC" + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1000);
+}
 
 function markUserActive(userId) {
   stats.activeUsers24h[userId] = Date.now();
@@ -98,8 +107,8 @@ function mainMenu() {
     reply_markup: {
       keyboard: [
         [{ text: "👤 Profile" }, { text: "Stock" }],
-        [{ text: "🤝 Refer & Earn" },{ text: "Get Telegram ID" }],
-        [{ text: "🆘 Support" }],
+        [{ text: "🛒 Buy Account" }],
+        [{ text: "🤝 Refer & Earn" }, { text: "🆘 Support" }],
       ],
       resize_keyboard: true,
       persistent: true,
@@ -127,6 +136,34 @@ const cancelKb = (label = "❌ Cancel") => ({
     one_time_keyboard: true,
   },
 });
+
+// ─── BUY ACCOUNT QUANTITY KEYBOARD ─────────────────────────────────────────
+function buyAccountQtyKeyboard(qty) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "➖", callback_data: "buyacc_minus" },
+          { text: `${qty} Account${qty > 1 ? "s" : ""}`, callback_data: "noop" },
+          { text: "➕", callback_data: "buyacc_plus" },
+        ],
+        [
+          { text: "✅ Confirm", callback_data: "buyacc_confirm" },
+          { text: "❌ Cancel", callback_data: "buyacc_cancel" },
+        ],
+      ],
+    },
+  };
+}
+
+function buyAccountQtyText(qty) {
+  return (
+    `🛒 Buy Account\n\n` +
+    `How many accounts would you like to buy?\n\n` +
+    `Price: ₹${ACCOUNT_PRICE} per account\n` +
+    `Total: ₹${qty * ACCOUNT_PRICE}`
+  );
+}
 
 function send(chatId, text, extra = {}) {
   return bot.sendMessage(chatId, text, extra).catch(err =>
@@ -244,20 +281,19 @@ bot.onText(/\/start(.*)/, async (msg, match) => {
   const isMember = await isGroupMember(chatId);
   if (!isMember) {
     send(chatId,
-      `🎲 Welcome to Ludo Adda, ${msg.from.first_name}!\n\n` +
       `⚠️ To use the bot you must join our official group first.`,
       {
         reply_markup: {
           inline_keyboard: [
             [{ text: "✅ Join Our Group", url: GROUP_INVITE_LINK }],
-            [{ text: "▶️ I've Joined — Start Playing", callback_data: "check_membership" }],
+            [{ text: "▶️ I've Joined", callback_data: "check_membership" }],
           ]
         },
       });
     return;
   }
   send(chatId,
-    `🎲 Welcome to Ludo Adda, ${msg.from.first_name}!\nLet's Play and Win Real Money !`,
+    `Welcome in Mark's Community, ${msg.from.first_name}`,
     mainMenu());
 });
 
@@ -468,6 +504,17 @@ bot.on("message", msg => {
       return;
     }
 
+    // ── BUY ACCOUNT: SCREENSHOT STAGE ───────────────────────────────────────
+    if (st.action === "buy_account_screenshot") {
+      if (text === "❌ Cancel Purchase") {
+        delete userState[chatId];
+        send(chatId, "❌ Purchase cancelled.", mainMenu());
+        return;
+      }
+      send(chatId, "📸 Please send a screenshot image as proof, not text.");
+      return;
+    }
+
     // ── CUSTOM AMOUNT HANDLERS ──────────────────────────────────────────────
 
     if (st.action === "custom_deposit_amount") {
@@ -580,6 +627,15 @@ bot.on("message", msg => {
     return;
   }
 
+  // ── BUY ACCOUNT: START ──────────────────────────────────────────────────
+  if (text === "🛒 Buy Account") {
+    requireGroupMembership(chatId, () => {
+      userState[chatId] = { action: "buy_account_qty", quantity: 1 };
+      send(chatId, buyAccountQtyText(1), buyAccountQtyKeyboard(1));
+    });
+    return;
+  }
+
   if (text === "🤝 Refer & Earn") {
     const u = users[chatId] || {};
     sendMD(chatId,
@@ -615,6 +671,10 @@ bot.on("callback_query", query => {
 
   bot.answerCallbackQuery(query.id).catch(() => { });
 
+  if (data === "noop") {
+    return;
+  }
+
   if (data === "check_membership") {
     isGroupMember(chatId).then(isMember => {
       if (isMember) {
@@ -633,6 +693,111 @@ bot.on("callback_query", query => {
           });
       }
     });
+    return;
+  }
+
+  // ── BUY ACCOUNT: QUANTITY STEPPER ──────────────────────────────────────────
+  if (data === "buyacc_minus" || data === "buyacc_plus") {
+    const st = userState[chatId];
+    if (!st || st.action !== "buy_account_qty") return;
+    let qty = st.quantity;
+    qty = data === "buyacc_plus" ? Math.min(ACCOUNT_MAX_QTY, qty + 1) : Math.max(1, qty - 1);
+    st.quantity = qty;
+    bot.editMessageText(buyAccountQtyText(qty), {
+      chat_id: chatId,
+      message_id: msgId,
+      reply_markup: buyAccountQtyKeyboard(qty).reply_markup,
+    }).catch(() => { });
+    return;
+  }
+
+  // ── BUY ACCOUNT: CANCEL AT QUANTITY STAGE ───────────────────────────────────
+  if (data === "buyacc_cancel") {
+    delete userState[chatId];
+    bot.editMessageText("❌ Purchase cancelled.", { chat_id: chatId, message_id: msgId }).catch(() => { });
+    send(chatId, "You can start a new purchase anytime from the menu.", mainMenu());
+    return;
+  }
+
+  // ── BUY ACCOUNT: CONFIRM QUANTITY → SHOW QR ─────────────────────────────────
+  if (data === "buyacc_confirm") {
+    const st = userState[chatId];
+    if (!st || st.action !== "buy_account_qty") return;
+    const qty = st.quantity;
+    const price = qty * ACCOUNT_PRICE;
+    bot.deleteMessage(chatId, msgId).catch(() => { });
+    userState[chatId] = { action: "buy_account_qr", quantity: qty, price };
+    bot.sendPhoto(chatId, PAYMENT_QR, {
+      caption:
+        `🛒 Buy ${qty} Account${qty > 1 ? "s" : ""}\n\n` +
+        `Amount to Pay: ₹${price}\n\n` +
+        `UPI ID: ${tapCopy("7891624054@mbk")}\n\n` +
+        `📷 After payment, tap "I Have Paid" and upload the screenshot.`,
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ I Have Paid", callback_data: "buyacc_paid" },
+          { text: "❌ Cancel", callback_data: "buyacc_cancel_qr" },
+        ]]
+      },
+    }).catch(() => { });
+    return;
+  }
+
+  // ── BUY ACCOUNT: CANCEL AT QR STAGE ─────────────────────────────────────────
+  if (data === "buyacc_cancel_qr") {
+    delete userState[chatId];
+    bot.deleteMessage(chatId, msgId).catch(() => { });
+    send(chatId, "❌ Purchase cancelled.", mainMenu());
+    return;
+  }
+
+  // ── BUY ACCOUNT: "I HAVE PAID" → ASK FOR SCREENSHOT ─────────────────────────
+  if (data === "buyacc_paid") {
+    const st = userState[chatId];
+    if (!st || st.action !== "buy_account_qr") return;
+    bot.deleteMessage(chatId, msgId).catch(() => { });
+    userState[chatId] = { action: "buy_account_screenshot", quantity: st.quantity, price: st.price };
+    send(chatId,
+      `📷 Please upload the payment screenshot.\n\n⚠ Screenshot must contain the UTR number.`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: "❌ Cancel Purchase" }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      });
+    return;
+  }
+
+  // ── BUY ACCOUNT: ADMIN APPROVE / REJECT ─────────────────────────────────────
+  if (data.startsWith("accord_approve_") || data.startsWith("accord_reject_")) {
+    if (!isAdmin(chatId)) return;
+    const isApprove = data.startsWith("accord_approve_");
+    const orderId = data.replace(isApprove ? "accord_approve_" : "accord_reject_", "");
+    const order = pendingAccountOrders[orderId];
+    if (!order || order.status !== "pending") {
+      send(chatId, "❌ Order not found or already processed.");
+      return;
+    }
+    order.status = isApprove ? "approved" : "rejected";
+    if (isApprove) {
+      send(chatId, `✅ Order ${orderId} approved.\nUser: ${users[order.chatId]?.name || order.chatId}\nQty: ${order.quantity}`);
+      send(order.chatId,
+        `✅ Your account purchase has been approved!\n\n` +
+        `Order ID: ${orderId}\n` +
+        `Accounts: ${order.quantity}\n` +
+        `Amount Paid: ₹${order.price}\n\n` +
+        `Our team will deliver your account details shortly.`,
+        mainMenu());
+    } else {
+      send(chatId, `❌ Order ${orderId} rejected.`);
+      send(order.chatId,
+        `❌ Your account purchase request was rejected.\n\n` +
+        `Order ID: ${orderId}\n\n` +
+        `Please contact support if you believe this is a mistake.`,
+        mainMenu());
+    }
     return;
   }
 
@@ -764,6 +929,53 @@ bot.on("photo", msg => {
       bot.sendMessage(ADMIN_ID,
         `New Deposit!\nTXN: ${txnId}\nUser: ${users[chatId]?.name} (${chatId})\nAmount: ₹${st.amount}\nScreenshot forward failed.`,
         { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `dep_approve_${txnId}` }, { text: "❌ Reject", callback_data: `dep_reject_${txnId}` }]] } }
+      ).catch(() => { });
+    });
+    return;
+  }
+
+  // ── BUY ACCOUNT: SCREENSHOT RECEIVED → SEND TO ADMIN ────────────────────────
+  if (st.action === "buy_account_screenshot") {
+    const fileId = msg.photo[msg.photo.length - 1].file_id;
+    const orderId = genOrderId();
+    pendingAccountOrders[orderId] = {
+      orderId,
+      chatId,
+      quantity: st.quantity,
+      price: st.price,
+      screenshotFileId: fileId,
+      status: "pending",
+      timestamp: new Date(),
+    };
+    delete userState[chatId];
+
+    send(chatId,
+      `📸 Screenshot Received!\n\n` +
+      `Order ID: ${orderId}\n` +
+      `Accounts: ${st.quantity}\n` +
+      `Amount: ₹${st.price}\n\n` +
+      `Admin is verifying your purchase. You will be notified.`,
+      mainMenu());
+
+    bot.sendPhoto(ADMIN_ID, fileId, {
+      caption:
+        `🛒 New Account Purchase Request!\n\n` +
+        `Order ID: ${orderId}\n` +
+        `User: ${users[chatId]?.name || "Unknown"} (${chatId})\n` +
+        `Username: @${users[chatId]?.username || "N/A"}\n` +
+        `Quantity: ${st.quantity}\n` +
+        `Amount: ₹${st.price}\n` +
+        `Time: ${new Date().toLocaleString("en-IN")}`,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ Approve", callback_data: `accord_approve_${orderId}` },
+          { text: "❌ Reject", callback_data: `accord_reject_${orderId}` },
+        ]]
+      },
+    }).catch(() => {
+      bot.sendMessage(ADMIN_ID,
+        `New Account Order!\nOrder: ${orderId}\nUser: ${users[chatId]?.name} (${chatId})\nQty: ${st.quantity}\nAmount: ₹${st.price}\nScreenshot forward failed.`,
+        { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `accord_approve_${orderId}` }, { text: "❌ Reject", callback_data: `accord_reject_${orderId}` }]] } }
       ).catch(() => { });
     });
     return;
